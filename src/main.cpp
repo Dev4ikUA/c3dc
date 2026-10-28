@@ -1,7 +1,7 @@
 #include <cstddef>
+#include <cstdio>
 #include <string>
 #include <windows.h>
-#include <chrono>
 
 extern "C"
 {
@@ -12,15 +12,16 @@ extern "C"
 #include "igpu.h"
 #include "isa.h"
 #include "memory.h"
+#include "bios_ui.h"
 }
 
 #include "bios_rom.hpp"
-#include "bios_gui.hpp"
-#include "bios_ui.h"
+#include "boot_config.hpp"
+#include "bootloader.hpp"
 
 #define AMD3DC_TEST_CORES    2u
 #define AMD3DC_TEST_SEGMENTS 4u
-#define AMD3DC_TEST_MEMORY   (1024u * 1024u)
+#define AMD3DC_TEST_MEMORY   (2u * 1024u * 1024u)
 
 static void print_segments(
     const AMD3DC_State* cpu
@@ -436,24 +437,22 @@ int main()
 
     if (!amd3dc_init(
         &cpu,
-        2,
-        4,
-        1024 * 1024))
+        AMD3DC_TEST_CORES,
+        AMD3DC_TEST_SEGMENTS,
+        AMD3DC_TEST_MEMORY))
     {
         std::fprintf(
             stderr,
-            "AMD 3DC initialization failed.\n"
+            "AMD3DC initialization failed.\n"
         );
 
         return 1;
     }
 
-    /* Call BIOS init hook so firmware can print banners. */
     amd3dc_bios_init(&cpu);
 
     BiosRom bios;
 
-    /* Build full path to BIOS binary using compile-time macro. */
     std::string bios_path =
         std::string(AMD3DC_FIRMWARE_DIR) + "bios.bin";
 
@@ -492,7 +491,6 @@ int main()
         return 1;
     }
 
-    /* Run BIOS POST hook after ROM execution. */
     if (!amd3dc_bios_post(&cpu))
     {
         std::fprintf(
@@ -505,10 +503,14 @@ int main()
         amd3dc_bios_print(&cpu);
     }
 
-    /* Enter AMI-style BIOS GUI. */
-    BiosGui gui(cpu);
-    gui.run();
-
+    /*
+     * Create the actual VM display FIRST.
+     *
+     * This creates:
+     *     AMD 3DC Virtual Machine
+     *
+     * and connects it to cpu.virtio.queue_data.
+     */
     if (!amd3dc_gui_init(&cpu))
     {
         std::fprintf(
@@ -520,47 +522,185 @@ int main()
         return 1;
     }
 
+    printf(
+        "Virtual display initialized: %ux%u\n",
+        cpu.virtio.width,
+        cpu.virtio.height
+    );
+
+    /*
+     * Initialize BIOS Setup UI.
+     *
+     * BIOS UI writes directly into the VirtIO framebuffer.
+     */
     BiosUI bios_ui;
+
     const bool bios_ui_initialized =
-        bios_ui_init(&bios_ui, &cpu);
+        bios_ui_init(
+            &bios_ui,
+            &cpu
+        );
 
-    if (bios_ui_initialized)
+    if (!bios_ui_initialized)
     {
-        const auto start_time = std::chrono::high_resolution_clock::now();
-        const auto timeout = std::chrono::seconds(5);
+        std::fprintf(
+            stderr,
+            "BIOS UI initialization failed.\n"
+        );
 
-        while (bios_ui.running)
+        amd3dc_gui_shutdown();
+        amd3dc_destroy(&cpu);
+        return 1;
+    }
+
+    /*
+     * Main VM loop.
+     *
+     * IMPORTANT:
+     *
+     * bios_ui_render()
+     *      -> writes framebuffer
+     *
+     * amd3dc_gui_render()
+     *      -> pumps Win32 messages
+     *      -> WM_PAINT reads framebuffer
+     *      -> window gets updated
+     */
+    while (bios_ui.running)
+    {
+        bios_ui_render(&bios_ui);
+
+        bios_ui_handle_input(&bios_ui);
+
+        if (!amd3dc_gui_render())
         {
-            bios_ui_render(&bios_ui);
-            bios_ui_handle_input(&bios_ui);
-
-            auto elapsed = std::chrono::high_resolution_clock::now() - start_time;
-            if (elapsed > timeout)
-            {
-                std::printf("BIOS UI timeout (5s) - exiting...\n");
-                bios_ui.running = false;
-            }
-
-            Sleep(16);
+            bios_ui.running = false;
+            break;
         }
 
-        bios_ui_destroy(&bios_ui);
+        Sleep(16);
+    }
+
+    bios_ui_destroy(&bios_ui);
+
+    printf(
+        "BIOS UI exited.\n"
+    );
+
+    /*
+     * Keep the VM display alive after BIOS Setup exits.
+     *
+     * This allows the host window to remain usable instead
+     * of immediately destroying the Win32 window.
+     */
+
+    BootConfig bootConfig;
+
+    if (!bootConfig.load(std::string(AMD3DC_FIRMWARE_DIR) + "../BOOT.LD") &&
+        !bootConfig.load("BOOT.LD"))
+    {
+        std::fprintf(
+            stderr,
+            "BOOT.LD load failed.\n"
+        );
+
+        amd3dc_gui_shutdown();
+        amd3dc_destroy(&cpu);
+
+        return 1;
     }
 
     std::printf(
-        "BIOS UI initialized: %s\n",
-        bios_ui_initialized ? "YES" : "NO"
+        "BOOT.LD target: %s\n",
+        bootConfig.image().c_str()
     );
 
-    printf("GPU: %ux%u @ %p\n",
-        cpu.virtio.width,
-        cpu.virtio.height,
-        cpu.virtio.queue_data);
+    const std::string boot_image_path =
+        std::string(AMD3DC_FIRMWARE_DIR) +
+        bootConfig.image();
 
-    const int result =
-        amd3dc_gui_run(&cpu);
+    std::printf(
+        "Boot image path: %s\n",
+        boot_image_path.c_str()
+    );
+
+    Bootloader bootloader;
+
+    if (!bootloader.loadImage(cpu, boot_image_path))
+    {
+        std::fprintf(
+            stderr,
+            "Boot image load failed: %s\n",
+            bootConfig.image().c_str()
+        );
+
+        amd3dc_gui_shutdown();
+        amd3dc_destroy(&cpu);
+
+        return 1;
+    }
+
+    std::printf(
+        "Boot image loaded\n"
+        "Load address: 0x%016llX\n"
+        "Entry point : 0x%016llX\n"
+        "Image size  : %llu bytes\n",
+        static_cast<unsigned long long>(
+            bootloader.loadAddress()),
+        static_cast<unsigned long long>(
+            bootloader.entryPoint()),
+        static_cast<unsigned long long>(
+            bootloader.imageSize())
+    );
+
+    if (!bootloader.start(cpu))
+    {
+        std::fprintf(
+            stderr,
+            "Boot image start failed.\n"
+        );
+
+        amd3dc_gui_shutdown();
+        amd3dc_destroy(&cpu);
+
+        return 1;
+    }
+
+    std::printf(
+        "Control transferred to boot image.\n"
+    );
+
+    int result = 0;
+    if (bootloader.isRealModeImage())
+    {
+        bool reportedRealModeError = false;
+        while (amd3dc_gui_render())
+        {
+            for (std::size_t step = 0; step < 10000; ++step)
+            {
+                if (!bootloader.stepRealMode())
+                {
+                    if (!bootloader.realModeError().empty() &&
+                        !reportedRealModeError)
+                    {
+                        std::fprintf(stderr, "x86 real-mode stop: %s\n",
+                            bootloader.realModeError().c_str());
+                        reportedRealModeError = true;
+                    }
+                    break;
+                }
+            }
+            bootloader.renderRealModeDisplay();
+            Sleep(1);
+        }
+    }
+    else
+    {
+        result = amd3dc_gui_run(&cpu);
+    }
 
     amd3dc_gui_shutdown();
+
     amd3dc_destroy(&cpu);
 
     return result;

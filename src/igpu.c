@@ -690,3 +690,56 @@ amd3dc_font_glyph(
     default: return blank;
     }
 }
+
+void amd3dc_virtio_render_text_mode(
+    AMD3DC_Virtio* virtio,
+    const uint8_t* video_memory)
+{
+    static const uint32_t palette[16] =
+    {
+        0xFF000000u, 0xFF0000AAu, 0xFF00AA00u, 0xFF00AAAAu,
+        0xFFAA0000u, 0xFFAA00AAu, 0xFFAA5500u, 0xFFAAAAAAu,
+        0xFF555555u, 0xFF5555FFu, 0xFF55FF55u, 0xFF55FFFFu,
+        0xFFFF5555u, 0xFFFF55FFu, 0xFFFFFF55u, 0xFFFFFFFFu
+    };
+
+    if (virtio == NULL || video_memory == NULL ||
+        !virtio->enabled || virtio->queue_data == NULL)
+        return;
+
+    memset(virtio->queue_data, 0, virtio->queue_data_size);
+
+    for (uint32_t row = 0; row < 25; ++row)
+    {
+        for (uint32_t column = 0; column < 80; ++column)
+        {
+            const size_t cell = (size_t)(row * 80 + column) * 2;
+            const uint8_t character = video_memory[cell];
+            const uint8_t attribute = video_memory[cell + 1];
+            const uint32_t foreground = palette[attribute & 0x0F];
+            const uint32_t background = palette[(attribute >> 4) & 0x0F];
+            const uint8_t* glyph = amd3dc_font_glyph(
+                character >= 0x20 && character < 0x7F
+                    ? (char)character : '?');
+
+            for (uint32_t y = 0; y < 16; ++y)
+            {
+                const int glyph_row = (int)y - 4;
+                const uint8_t row_bits =
+                    glyph_row >= 0 && glyph_row < 7 ? glyph[glyph_row] : 0;
+                for (uint32_t x = 0; x < 8; ++x)
+                {
+                    const uint32_t color =
+                        x >= 1 && x <= 5 &&
+                        (row_bits & (1u << (5 - x)))
+                            ? foreground : background;
+                    amd3dc_virtio_put_pixel(
+                        virtio,
+                        column * 8 + x,
+                        row * 16 + y,
+                        color);
+                }
+            }
+        }
+    }
+}

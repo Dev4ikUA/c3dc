@@ -246,6 +246,12 @@ bool amd3dc_execute64(
     case AMD3DC_OP_NOP:
         return true;
 
+    case AMD3DC_OP_MOVI:
+        if (!amd3dc_valid_gpr(instruction->rd))
+            return false;
+        core->registers[instruction->rd] = instruction->imm;
+        return true;
+
     case AMD3DC_OP_MOV:
 
         if (!amd3dc_valid_gpr(instruction->rd) ||
@@ -463,6 +469,30 @@ bool amd3dc_execute64(
                 );
         }
 
+        return true;
+
+    case AMD3DC_OP_JNZ:
+        if ((core->flags & 1ULL) == 0)
+        {
+            core->pc +=
+                (uint64_t)amd3dc_sign_extend_imm32(
+                    instruction->imm
+                );
+        }
+        return true;
+
+    case AMD3DC_OP_ZERO_EXT32:
+        if (!amd3dc_valid_gpr(instruction->rd))
+            return false;
+
+        core->registers[instruction->rd] &= 0xFFFFFFFFULL;
+        return true;
+
+    case AMD3DC_OP_ZERO_EXT16:
+        if (!amd3dc_valid_gpr(instruction->rd))
+            return false;
+
+        core->registers[instruction->rd] &= 0xFFFFULL;
         return true;
 
         /* ================================================================ */

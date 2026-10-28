@@ -54,6 +54,12 @@ void amd3dc_virtio_render_system_screen(
     AMD3DC_Virtio* virtio
 );
 
+/* Present the PC-compatible 80x25 text buffer at physical 0xB8000. */
+void amd3dc_virtio_render_text_mode(
+    AMD3DC_Virtio* virtio,
+    const uint8_t* video_memory
+);
+
 /*
  * Write a pixel to the Virtio GPU framebuffer.
  * Returns true on success, false on failure.

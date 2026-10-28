@@ -1,4 +1,6 @@
 #include "gui.h"
+#include "amd3dc.h"
+#include "isa.h"
 #include "igpu.h"
 #include "amd3dc_types.h"
 
@@ -14,6 +16,7 @@
 #define AMD3DC_GUI_REFRESH   250
 
 #define AMD3DC_GUI_BG_COLOR RGB(0, 0, 0)
+#define AMD3DC_INPUT_QUEUE_SIZE 32
 
 static AMD3DC_State* g_state = NULL;
 static HWND g_window = NULL;
@@ -22,6 +25,29 @@ static uint32_t* g_dib_pixels = NULL;
 static size_t g_dib_pixel_count = 0;
 
 static BITMAPINFO g_bitmap_info;
+
+static AMD3DC_Key g_input_queue[AMD3DC_INPUT_QUEUE_SIZE];
+static size_t g_input_read = 0;
+static size_t g_input_write = 0;
+
+static void amd3dc_gui_push_key(AMD3DC_Key key)
+{
+    const size_t next = (g_input_write + 1) % AMD3DC_INPUT_QUEUE_SIZE;
+    if (next == g_input_read)
+        return;
+    g_input_queue[g_input_write] = key;
+    g_input_write = next;
+}
+
+bool amd3dc_gui_poll_key(AMD3DC_Key* key)
+{
+    if (key == NULL || g_input_read == g_input_write)
+        return false;
+
+    *key = g_input_queue[g_input_read];
+    g_input_read = (g_input_read + 1) % AMD3DC_INPUT_QUEUE_SIZE;
+    return true;
+}
 
 static bool amd3dc_gui_resize_buffer(void)
 {
@@ -96,7 +122,7 @@ static bool amd3dc_gui_update_framebuffer(void)
     if (g_state == NULL)
         return false;
 
-        const AMD3DC_Virtio* virtio = &g_state->virtio;
+    const AMD3DC_Virtio* virtio = &g_state->virtio;
 
     if (!virtio->initialized ||
         !virtio->enabled ||
@@ -327,18 +353,26 @@ amd3dc_gui_wnd_proc(
         return 1;
 
     case WM_KEYDOWN:
-        /*
-         * F10 = power off the virtual machine.
-         *
-         * Guest keyboard emulation will be connected
-         * here later.
-         */
-        if (wParam == VK_F10)
+        switch (wParam)
         {
-            DestroyWindow(hwnd);
-            return 0;
+        case VK_UP: amd3dc_gui_push_key(AMD3DC_KEY_UP); break;
+        case VK_DOWN: amd3dc_gui_push_key(AMD3DC_KEY_DOWN); break;
+        case VK_LEFT: amd3dc_gui_push_key(AMD3DC_KEY_LEFT); break;
+        case VK_RIGHT: amd3dc_gui_push_key(AMD3DC_KEY_RIGHT); break;
+        case VK_RETURN: amd3dc_gui_push_key(AMD3DC_KEY_ENTER); break;
+        case VK_BACK: amd3dc_gui_push_key((AMD3DC_Key)(AMD3DC_KEY_CHAR_BASE + 8)); break;
+        case VK_ESCAPE: amd3dc_gui_push_key(AMD3DC_KEY_ESCAPE); break;
+        case VK_TAB: amd3dc_gui_push_key(AMD3DC_KEY_TAB); break;
+        case VK_F1: amd3dc_gui_push_key(AMD3DC_KEY_F1); break;
+        case VK_F2: amd3dc_gui_push_key(AMD3DC_KEY_F2); break;
+        case VK_F10: amd3dc_gui_push_key(AMD3DC_KEY_F10); break;
+        default: break;
         }
+        return 0;
 
+    case WM_CHAR:
+        if (wParam >= 32 && wParam <= 126)
+            amd3dc_gui_push_key((AMD3DC_Key)(AMD3DC_KEY_CHAR_BASE + (unsigned)wParam));
         return 0;
 
     case WM_DESTROY:
@@ -377,6 +411,8 @@ bool amd3dc_gui_init(
     }
 
     g_state = state;
+    g_input_read = 0;
+    g_input_write = 0;
 
     /*
      * Render the first guest frame before
@@ -408,7 +444,7 @@ bool amd3dc_gui_init(
         instance;
 
     window_class.hCursor =
-        LoadCursorW(NULL, IDC_ARROW);
+        LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
 
     window_class.lpszClassName =
         AMD3DC_GUI_CLASS_NAME;
@@ -472,6 +508,8 @@ void amd3dc_gui_destroy(void)
     }
 
     g_dib_pixel_count = 0;
+    g_input_read = 0;
+    g_input_write = 0;
     g_state = NULL;
 }
 
@@ -501,7 +539,23 @@ int amd3dc_gui_run(
         return -1;
 
     while (amd3dc_gui_render())
+    {
+        if (state->cores != NULL && state->core_count != 0)
+        {
+            AMD3DC_Core* core = &state->cores[0];
+            for (size_t step = 0; step < 1000 && !core->halted; ++step)
+            {
+                const uint64_t raw = amd3dc_fetch64(state);
+                const AMD3DC_Instruction instruction = amd3dc_decode64(raw);
+                if (!amd3dc_execute64(state, &instruction))
+                {
+                    core->halted = true;
+                    break;
+                }
+            }
+        }
         Sleep(16);
+    }
 
     return 0;
 }

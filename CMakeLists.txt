@@ -1,5 +1,3 @@
-﻿cmake_minimum_required(VERSION 3.20)
-
 cmake_minimum_required(VERSION 3.20)
 
 project(AMD_3DC
@@ -28,12 +26,15 @@ add_executable(AMD_3DC
     src/igpu.c
     src/gui.c
     src/bios.c
-    src/bios_ui.c
+    src/bios_ui.cpp
 
     src/bios_rom.cpp
     src/bios_gui.cpp
     src/quantum_die.cpp
     src/bootloader.cpp
+    src/boot_config.cpp
+    src/x86_translator.cpp
+    src/x86_compat.cpp
 )
 
 target_sources(AMD_3DC PRIVATE
@@ -43,7 +44,10 @@ target_sources(AMD_3DC PRIVATE
     include/bios_gui.hpp
     include/bios_rom.hpp
     include/bios_ui.h
+    include/boot_config.hpp
     include/bootloader.hpp
+    include/x86_translator.hpp
+    include/x86_compat.hpp
     include/gui.h
     include/igpu.h
     include/isa.h

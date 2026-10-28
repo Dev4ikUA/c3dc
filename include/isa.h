@@ -44,6 +44,10 @@ typedef enum
     AMD3DC_OP_CMP = 0x0B,
     AMD3DC_OP_JMP = 0x0C,
     AMD3DC_OP_JZ = 0x0D,
+    AMD3DC_OP_ZERO_EXT32 = 0x0E,
+    AMD3DC_OP_MOVI = 0x62,
+    AMD3DC_OP_ZERO_EXT16 = 0x63,
+    AMD3DC_OP_JNZ = 0x64,
 
     /* CVX */
     AMD3DC_OP_CVX_VADD = 0x10,

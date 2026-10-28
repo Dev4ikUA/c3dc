@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 
+#include "x86_compat.hpp"
+
 extern "C"
 {
 #include "amd3dc_types.h"
@@ -22,6 +24,11 @@ public:
         AMD3DC_State& state
     );
 
+    bool isRealModeImage() const noexcept;
+    bool stepRealMode();
+    void renderRealModeDisplay();
+    const std::string& realModeError() const noexcept;
+
     std::uint64_t loadAddress() const noexcept;
     std::uint64_t entryPoint() const noexcept;
     std::uint64_t imageSize() const noexcept;
@@ -30,8 +37,11 @@ private:
     std::uint64_t loadAddress_ = 0;
     std::uint64_t entryPoint_ = 0;
     std::uint64_t imageSize_ = 0;
+    std::uint64_t payloadSize_ = 0;
 
     bool loaded_ = false;
+    bool realModeImage_ = false;
+    X86Compat x86_;
 };
 
 #endif
