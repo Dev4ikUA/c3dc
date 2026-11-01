@@ -25,6 +25,8 @@ extern "C" {
         AMD3DC_KEY_F1,
         AMD3DC_KEY_F2,
         AMD3DC_KEY_F10,
+        AMD3DC_KEY_F5,
+        AMD3DC_KEY_F8,
 
         AMD3DC_KEY_CHAR_BASE = 256
 

@@ -13,8 +13,31 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
     add_compile_options(/W4)
+    # The x86 CPU is an instruction interpreter and is the dominant cost when
+    # booting DOS. Keep Debug symbols, but compile this hot translation unit
+    # with optimizations and without MSVC's per-operation runtime checks.
+    string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    set_source_files_properties(src/x86_compat.cpp PROPERTIES
+        COMPILE_OPTIONS "$<$<CONFIG:Debug>:/O2>"
+    )
+    set(_AMD3DC_DEBUG_RUNTIME_CHECK_SOURCES
+        src/main.cpp
+        src/bios_ui.cpp
+        src/bios_rom.cpp
+        src/bios_gui.cpp
+        src/quantum_die.cpp
+        src/bootloader.cpp
+        src/boot_config.cpp
+        src/x86_translator.cpp
+    )
+    set_source_files_properties(${_AMD3DC_DEBUG_RUNTIME_CHECK_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "$<$<CONFIG:Debug>:/RTC1>"
+    )
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
+    set_source_files_properties(src/x86_compat.cpp PROPERTIES
+        COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>"
+    )
 endif()
 
 add_executable(AMD_3DC
@@ -68,6 +91,11 @@ target_link_libraries(AMD_3DC PRIVATE
     user32
     gdi32
 )
+
+if(MINGW)
+    # Keep Release builds self-contained on Windows hosts without MinGW on PATH.
+    target_link_options(AMD_3DC PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
 
 # Set working directory for debugging
 set_target_properties(AMD_3DC PROPERTIES

@@ -29,6 +29,24 @@ static BITMAPINFO g_bitmap_info;
 static AMD3DC_Key g_input_queue[AMD3DC_INPUT_QUEUE_SIZE];
 static size_t g_input_read = 0;
 static size_t g_input_write = 0;
+static bool g_keyboard_captured = false;
+
+static void amd3dc_gui_set_keyboard_capture(bool captured)
+{
+    g_keyboard_captured = captured;
+    if (g_window != NULL)
+    {
+        SetWindowTextW(g_window, captured
+            ? AMD3DC_GUI_TITLE L" [Keyboard captured]"
+            : AMD3DC_GUI_TITLE L" [Click to capture keyboard]");
+    }
+}
+
+static void amd3dc_gui_clear_input(void)
+{
+    g_input_read = 0;
+    g_input_write = 0;
+}
 
 static void amd3dc_gui_push_key(AMD3DC_Key key)
 {
@@ -299,6 +317,19 @@ amd3dc_gui_wnd_proc(
 
     switch (message)
     {
+    case WM_SETFOCUS:
+        amd3dc_gui_set_keyboard_capture(true);
+        return 0;
+
+    case WM_KILLFOCUS:
+        amd3dc_gui_set_keyboard_capture(false);
+        amd3dc_gui_clear_input();
+        return 0;
+
+    case WM_LBUTTONDOWN:
+        SetFocus(hwnd);
+        break;
+
     case WM_PAINT:
     {
         PAINTSTRUCT ps;
@@ -353,6 +384,8 @@ amd3dc_gui_wnd_proc(
         return 1;
 
     case WM_KEYDOWN:
+        if (!g_keyboard_captured)
+            return 0;
         switch (wParam)
         {
         case VK_UP: amd3dc_gui_push_key(AMD3DC_KEY_UP); break;
@@ -365,13 +398,17 @@ amd3dc_gui_wnd_proc(
         case VK_TAB: amd3dc_gui_push_key(AMD3DC_KEY_TAB); break;
         case VK_F1: amd3dc_gui_push_key(AMD3DC_KEY_F1); break;
         case VK_F2: amd3dc_gui_push_key(AMD3DC_KEY_F2); break;
+        case VK_F5: amd3dc_gui_push_key(AMD3DC_KEY_F5); break;
+        case VK_F8: amd3dc_gui_push_key(AMD3DC_KEY_F8); break;
         case VK_F10: amd3dc_gui_push_key(AMD3DC_KEY_F10); break;
         default: break;
         }
         return 0;
 
     case WM_CHAR:
-        if (wParam >= 32 && wParam <= 126)
+        if (g_keyboard_captured &&
+            ((wParam >= 32 && wParam <= 126) ||
+                (wParam >= 1 && wParam <= 26)))
             amd3dc_gui_push_key((AMD3DC_Key)(AMD3DC_KEY_CHAR_BASE + (unsigned)wParam));
         return 0;
 
@@ -413,6 +450,7 @@ bool amd3dc_gui_init(
     g_state = state;
     g_input_read = 0;
     g_input_write = 0;
+    g_keyboard_captured = false;
 
     /*
      * Render the first guest frame before
@@ -482,6 +520,8 @@ bool amd3dc_gui_init(
 
     ShowWindow(g_window, SW_SHOW);
     UpdateWindow(g_window);
+    SetFocus(g_window);
+    amd3dc_gui_set_keyboard_capture(GetFocus() == g_window);
 
     SetTimer(
         g_window,
@@ -510,6 +550,7 @@ void amd3dc_gui_destroy(void)
     g_dib_pixel_count = 0;
     g_input_read = 0;
     g_input_write = 0;
+    g_keyboard_captured = false;
     g_state = NULL;
 }
 

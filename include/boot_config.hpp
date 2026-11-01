@@ -11,9 +11,13 @@ public:
     );
 
     const std::string& image() const noexcept;
+    const std::string& hardDisk() const noexcept;
+    const std::string& secondFloppy() const noexcept;
 
 private:
     std::string image_;
+    std::string hard_disk_;
+    std::string second_floppy_;
 };
 
 #endif

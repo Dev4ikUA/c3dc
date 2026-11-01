@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <windows.h>
@@ -428,8 +429,9 @@ static bool test_igpu(
     return true;
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    const bool headless = argc > 1 && std::string(argv[1]) == "--headless";
     AMD3DC_State cpu{};
 
     printf("AMD 3DC Emulator Starting...\n");
@@ -511,7 +513,7 @@ int main()
      *
      * and connects it to cpu.virtio.queue_data.
      */
-    if (!amd3dc_gui_init(&cpu))
+    if (!headless && !amd3dc_gui_init(&cpu))
     {
         std::fprintf(
             stderr,
@@ -522,20 +524,17 @@ int main()
         return 1;
     }
 
-    printf(
-        "Virtual display initialized: %ux%u\n",
-        cpu.virtio.width,
-        cpu.virtio.height
-    );
+    if (!headless)
+        printf("Virtual display initialized: %ux%u\n", cpu.virtio.width, cpu.virtio.height);
 
     /*
      * Initialize BIOS Setup UI.
      *
      * BIOS UI writes directly into the VirtIO framebuffer.
      */
-    BiosUI bios_ui;
+    BiosUI bios_ui{};
 
-    const bool bios_ui_initialized =
+    const bool bios_ui_initialized = headless ||
         bios_ui_init(
             &bios_ui,
             &cpu
@@ -566,7 +565,7 @@ int main()
      *      -> WM_PAINT reads framebuffer
      *      -> window gets updated
      */
-    while (bios_ui.running)
+    while (!headless && bios_ui.running)
     {
         bios_ui_render(&bios_ui);
 
@@ -581,7 +580,7 @@ int main()
         Sleep(16);
     }
 
-    bios_ui_destroy(&bios_ui);
+    if (!headless) bios_ui_destroy(&bios_ui);
 
     printf(
         "BIOS UI exited.\n"
@@ -604,7 +603,7 @@ int main()
             "BOOT.LD load failed.\n"
         );
 
-        amd3dc_gui_shutdown();
+        if (!headless) amd3dc_gui_shutdown();
         amd3dc_destroy(&cpu);
 
         return 1;
@@ -634,10 +633,33 @@ int main()
             bootConfig.image().c_str()
         );
 
-        amd3dc_gui_shutdown();
+        if (!headless) amd3dc_gui_shutdown();
         amd3dc_destroy(&cpu);
 
         return 1;
+    }
+
+    const std::string& hdd_path = bootConfig.hardDisk();
+
+    if (!hdd_path.empty())
+    {
+        if (!bootloader.loadHardDisk(hdd_path))
+        {
+            std::fprintf(stderr, "Hard disk image load failed: %s\n", hdd_path.c_str());
+            if (!headless) amd3dc_gui_shutdown();
+            amd3dc_destroy(&cpu);
+            return 1;
+        }
+    }
+
+    if (!bootConfig.secondFloppy().empty())
+    {
+        const std::string floppy_path = std::string(AMD3DC_FIRMWARE_DIR) + bootConfig.secondFloppy();
+        if (!bootloader.loadSecondFloppy(floppy_path))
+        {
+            std::fprintf(stderr, "Second floppy image load failed: %s\\n", bootConfig.secondFloppy().c_str());
+            if (!headless) amd3dc_gui_shutdown(); amd3dc_destroy(&cpu); return 1;
+        }
     }
 
     std::printf(
@@ -660,7 +682,7 @@ int main()
             "Boot image start failed.\n"
         );
 
-        amd3dc_gui_shutdown();
+        if (!headless) amd3dc_gui_shutdown();
         amd3dc_destroy(&cpu);
 
         return 1;
@@ -674,24 +696,95 @@ int main()
     if (bootloader.isRealModeImage())
     {
         bool reportedRealModeError = false;
-        while (amd3dc_gui_render())
+        std::uint64_t debugFrames = 0;
+        auto lastDebugOutput = std::chrono::steady_clock::now();
+        while (headless || amd3dc_gui_render())
         {
-            for (std::size_t step = 0; step < 10000; ++step)
+            if (!headless) bootloader.pollRealModeInput();
+            // Amortize the host-side loop and virtual dispatch over larger
+            // batches. The window message pump still runs once per batch.
+            const std::size_t executed = bootloader.runRealModeBatch(2000000);
+            if (executed < 2000000)
             {
-                if (!bootloader.stepRealMode())
+                if (!bootloader.realModeError().empty() && !reportedRealModeError)
                 {
-                    if (!bootloader.realModeError().empty() &&
-                        !reportedRealModeError)
-                    {
-                        std::fprintf(stderr, "x86 real-mode stop: %s\n",
-                            bootloader.realModeError().c_str());
-                        reportedRealModeError = true;
-                    }
-                    break;
+                    std::fprintf(stderr, "x86 real-mode stop: %s\n",
+                        bootloader.realModeError().c_str());
+                    reportedRealModeError = true;
                 }
+                if (!bootloader.realModeError().empty())
+                    break;
             }
-            bootloader.renderRealModeDisplay();
-            Sleep(1);
+            if (!headless) bootloader.renderRealModeDisplay();
+
+            // Full register and disk traces are expensive and overwhelm the
+            // console during DOS I/O. Keep a useful heartbeat, but emit it
+            // only twice per second.
+            ++debugFrames;
+            const auto now = std::chrono::steady_clock::now();
+            if (!headless && now - lastDebugOutput >= std::chrono::seconds(2))
+            {
+                const std::string guestState = bootloader.realModeDebugState();
+                std::fprintf(stderr, "Real-mode CPU: %s\n", guestState.c_str());
+                if (cpu.memory.data != nullptr && cpu.memory.size >= 0x100000)
+                {
+                    unsigned cs = 0, ip = 0;
+                    std::sscanf(guestState.c_str(), "ES:CS:SS:DS=%*x:%x:%*x:%*x IP=%x",
+                        &cs, &ip);
+                    std::fprintf(stderr, "Guest instruction bytes at %04X:%04X:", cs, ip);
+                    for (unsigned i = 0; i < 16; ++i)
+                    {
+                        const std::size_t address = ((static_cast<std::size_t>(cs) << 4) +
+                            static_cast<std::uint16_t>(ip + i)) & 0xFFFFF;
+                        std::fprintf(stderr, " %02X", cpu.memory.data[address]);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+                lastDebugOutput = now;
+            }
+            if (headless && now - lastDebugOutput >= std::chrono::seconds(2))
+            {
+                const std::string guestState = bootloader.realModeDebugState();
+                std::fprintf(stderr, "Real-mode CPU: %s\n", guestState.c_str());
+                unsigned cs = 0, ip = 0;
+                if (std::sscanf(guestState.c_str(),
+                    "ES:CS:SS:DS=%*x:%x:%*x:%*x IP=%x", &cs, &ip) == 2 &&
+                    cpu.memory.data != nullptr)
+                {
+                    std::fprintf(stderr, "Guest bytes at %04X:%04X:", cs, ip);
+                    for (unsigned i = 0; i < 16; ++i)
+                    {
+                        const std::size_t address = ((static_cast<std::size_t>(cs) << 4) +
+                            static_cast<std::uint16_t>(ip + i)) & 0xFFFFF;
+                        std::fprintf(stderr, " %02X", cpu.memory.data[address]);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+                if (cpu.memory.data != nullptr && cpu.memory.size >= 0xB8000 + 4000)
+                {
+                    for (unsigned row = 0; row < 25; ++row)
+                    {
+                        char line[81];
+                        for (unsigned col = 0; col < 80; ++col)
+                            line[col] = static_cast<char>(cpu.memory.data[
+                                0xB8000 + (row * 80 + col) * 2]);
+                        line[80] = '\0';
+                        for (int col = 79; col >= 0 && line[col] == ' '; --col)
+                            line[col] = '\0';
+                        if (line[0] != '\0') std::fprintf(stderr, "VGA[%02u]: %s\n", row, line);
+                    }
+                }
+                lastDebugOutput = now;
+            }
+
+            // Yield occasionally to keep the host responsive without paying
+            // a scheduler handoff on every emulation quantum.
+            if (!headless && (debugFrames & 7u) == 0)
+                Sleep(0);
+            if (headless && !bootloader.realModeError().empty()) {
+                std::fprintf(stderr, "x86 real-mode stop: %s\n", bootloader.realModeError().c_str());
+                break;
+            }
         }
     }
     else
@@ -699,7 +792,7 @@ int main()
         result = amd3dc_gui_run(&cpu);
     }
 
-    amd3dc_gui_shutdown();
+    if (!headless) amd3dc_gui_shutdown();
 
     amd3dc_destroy(&cpu);
 

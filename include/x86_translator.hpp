@@ -25,15 +25,17 @@ struct X86TranslationResult
 };
 
 /*
- * Translate a strict 16-bit real-mode subset into AMD 3DC instructions.
- * x86 AX..DI map to AMD 3DC R0..R7 in legacy order.
+ * Legacy static translator for a small 8086 subset. This does not implement an
+ * x86 CPU and is not used by the floppy boot path; real-mode images execute in
+ * X86Compat, the real-mode x86 execution core being extended toward 486
+ * compatibility.
  */
 X86TranslationResult amd3dc_translate_i8086(
     const std::uint8_t* bytes,
     std::size_t size
 );
 
-/* Compatibility entry point; now uses the 16-bit real-mode decoder. */
+/* Historical name retained for callers; this still translates only 8086 code. */
 X86TranslationResult amd3dc_translate_i386(
     const std::uint8_t* bytes,
     std::size_t size

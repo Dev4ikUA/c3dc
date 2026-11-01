@@ -4,6 +4,7 @@
 #include <fstream>
 #include <vector>
 #include <cstring>
+#include <utility>
 
 namespace
 {
@@ -164,6 +165,42 @@ bool Bootloader::loadImage(
     return true;
 }
 
+bool Bootloader::loadHardDisk(const std::string& filename)
+{
+    if (filename.empty())
+    {
+        return false;
+    }
+
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
+    if (!file)
+        return false;
+
+    const auto size = file.tellg();
+    if (size <= 0 || (static_cast<std::uint64_t>(size) % 512) != 0)
+        return false;
+    std::vector<std::uint8_t> image(static_cast<std::size_t>(size));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char*>(image.data()), size))
+        return false;
+
+    x86_.attachHardDisk(std::move(image), filename);
+    return true;
+}
+
+bool Bootloader::loadSecondFloppy(const std::string& filename)
+{
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
+    if (!file) return false;
+    const auto size = file.tellg();
+    if (size != 1474560) return false;
+    std::vector<std::uint8_t> image(static_cast<std::size_t>(size));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char*>(image.data()), size)) return false;
+    x86_.attachSecondFloppy(std::move(image));
+    return true;
+}
+
 bool Bootloader::start(
     AMD3DC_State& state
 )
@@ -194,6 +231,17 @@ bool Bootloader::isRealModeImage() const noexcept
 bool Bootloader::stepRealMode()
 {
     return realModeImage_ && x86_.step();
+}
+
+std::size_t Bootloader::runRealModeBatch(std::size_t instructionBudget)
+{
+    return realModeImage_ ? x86_.run(instructionBudget) : 0;
+}
+
+void Bootloader::pollRealModeInput()
+{
+    if (realModeImage_)
+        x86_.pollHostInput();
 }
 
 void Bootloader::renderRealModeDisplay()

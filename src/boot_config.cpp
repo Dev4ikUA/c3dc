@@ -34,20 +34,33 @@ bool BootConfig::load(
             continue;
         }
 
-        constexpr const char* prefix = "IMAGE=";
+        constexpr const char* imagePrefix = "IMAGE=";
+        constexpr const char* hardDiskPrefix = "HDD=";
+        constexpr const char* floppy2Prefix = "FLOPPY2=";
 
-        if (line.rfind(prefix, 0) == 0)
+        if (line.rfind(imagePrefix, 0) == 0)
         {
             image_ = line.substr(6);
-
-            return !image_.empty();
         }
+        else if (line.rfind(hardDiskPrefix, 0) == 0)
+        {
+            hard_disk_ = line.substr(4);
+        }
+        else if (line.rfind(floppy2Prefix, 0) == 0)
+            second_floppy_ = line.substr(8);
     }
 
-    return false;
+    return !image_.empty();
 }
+
+const std::string& BootConfig::secondFloppy() const noexcept { return second_floppy_; }
 
 const std::string& BootConfig::image() const noexcept
 {
     return image_;
+}
+
+const std::string& BootConfig::hardDisk() const noexcept
+{
+    return hard_disk_;
 }
