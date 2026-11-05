@@ -49,6 +49,10 @@ Generated\ Files/
 TestResult.xml
 nunit-*.xml
 
+# Codex chat export and useless batch
+CHAT_EXPORT.md
+Run-Turbo.bat
+
 # Build Results of an ATL Project
 [Dd]ebugPS/
 [Rr]eleasePS/
